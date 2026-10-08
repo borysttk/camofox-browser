@@ -6128,7 +6128,13 @@ if (FLY_MACHINE_ID) {
 }
 
 // Per-tab inactivity reaper — close tabs idle for TAB_INACTIVITY_MS
+// Q patch (semantyka z lib/config.js, komentarz z 2026-10-01): TAB_INACTIVITY_MS=0
+// oznacza "reaper wyłączony". Bez tego guardu 0 reapowało każdą kartę przy
+// drugim ticku (idleMs >= 0 jest zawsze prawdą) — karta keepalive/VNC ginęła
+// po ~60-120 s, a wielogodzinny churn (create/close sesji co ~2 min) wyczerpywał
+// zasoby Firefoksa, aż newPage() zaczynało wisać (POST /tabs/open bez odpowiedzi).
 setInterval(() => {
+  if (TAB_INACTIVITY_MS <= 0) return;
   const now = Date.now();
   for (const [userId, session] of sessions) {
     for (const [listItemId, group] of session.tabGroups) {
