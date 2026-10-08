@@ -1,0 +1,6 @@
+{
+  "name": "canvas",
+  "version": "1.0.0",
+  "description": "Live canvas preview of browsed content via SSE streaming",
+  "enableEnvVar": "ENABLE_CANVAS"
+}

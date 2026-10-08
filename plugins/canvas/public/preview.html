@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="pl" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Camofox Live</title>
+<style>
+  :root { --bg: #0a0a0f; --glass: rgba(255,255,255,0.04); --glass-border: rgba(255,255,255,0.08); --text: rgba(255,255,255,0.85); --text-dim: rgba(255,255,255,0.4); --accent: #00d4aa; --accent-glow: rgba(0,212,170,0.15); --danger: #ff4444; }
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  #wrap { position: relative; width: 100%; height: 100%; }
+  #cv { width: 100%; height: 100%; display: block; object-fit: contain; cursor: crosshair; }
+  #cv.loading { opacity: 0.3; }
+  /* Top bar */
+  #bar { position: fixed; top: 0; left: 0; right: 0; height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: linear-gradient(180deg, rgba(10,10,15,0.95) 60%, transparent); z-index: 20; pointer-events: none; }
+  #bar > * { pointer-events: auto; }
+  #brand { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; letter-spacing: 0.5px; }
+  #brand .logo { width: 28px; height: 28px; border-radius: 6px; background: linear-gradient(135deg, #00d4aa, #00a88a); display: flex; align-items: center; justify-content: center; font-size: 14px; color: #0a0a0f; font-weight: 700; }
+  #status-line { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; transition: background 0.3s, box-shadow 0.3s; }
+  .dot.live { background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+  .dot.off { background: var(--danger); box-shadow: 0 0 6px rgba(255,68,68,0.3); }
+  .dot.paused { background: var(--text-dim); }
+  /* Controls */
+  #ctrl { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; background: var(--glass); border: 1px solid var(--glass-border); backdrop-filter: blur(20px); border-radius: 40px; padding: 8px 20px; z-index: 20; }
+  #ctrl button { background: none; border: none; color: var(--text); cursor: pointer; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; transition: background 0.2s, color 0.2s; }
+  #ctrl button:hover { background: rgba(255,255,255,0.08); }
+  #ctrl button.active { color: var(--accent); }
+  #fps { font-size: 11px; color: var(--text-dim); min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; }
+  #quality { font-size: 10px; color: var(--text-dim); background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  /* Error overlay */
+  #error { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(10,10,15,0.9); z-index: 100; flex-direction: column; gap: 12px; }
+  #error.show { display: flex; }
+  #error .msg { color: var(--danger); font-size: 14px; max-width: 400px; text-align: center; line-height: 1.6; }
+  #error .retry { background: var(--accent); color: #0a0a0f; border: none; padding: 10px 24px; border-radius: 8px; font-size: 13px; cursor: pointer; font-weight: 600; }
+  /* Hint */
+  #hint { position: fixed; bottom: 72px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--text-dim); opacity: 0.5; z-index: 15; white-space: nowrap; }
+  /* Fullscreen */
+  :fullscreen #bar, :fullscreen #ctrl, :fullscreen #hint { display: none; }
+  ::backdrop { background: rgba(0,0,0,0.9); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <img id="cv" class="loading" alt="Camofox live preview">
+</div>
+<div id="bar">
+  <div id="brand"><div class="logo">C</div><span>Camofox Live</span></div>
+  <div id="status-line"><span class="dot off" id="dot"></span><span id="stat">connecting…</span></div>
+</div>
+<div id="ctrl">
+  <button id="btnP" title="Pause / Play (Space)">⏸</button>
+  <span id="fps">-- fps</span>
+  <button id="btnF" title="Fullscreen (F)">⛶</button>
+  <span id="quality">SD</span>
+</div>
+<div id="hint">Space = pause · F = fullscreen · scroll = quality</div>
+<div id="error"><div class="msg">Nie połączono z Camofox.<br>Upewnij się że serwer działa na <code>:9377</code>.</div><button class="retry" onclick="location.reload()">Ponów</button></div>
+<script>
+const userId = window.__CANVAS_USER_ID__ || 'q';
+const qs = new URLSearchParams(window.location.search);
+let quality = qs.get('quality') === 'hd' ? 'hd' : 'sd';
+let frameInterval = quality === 'hd' ? 5000 : 2000;
+
+const cv = document.getElementById('cv');
+const dot = document.getElementById('dot');
+const stat = document.getElementById('stat');
+const fpsEl = document.getElementById('fps');
+const qualityEl = document.getElementById('quality');
+const btnP = document.getElementById('btnP');
+const btnF = document.getElementById('btnF');
+const errEl = document.getElementById('error');
+
+let paused = false, loading = false, frameCount = 0, lastFpsTime = Date.now(), fps = 0;
+let es = null;
+
+qualityEl.textContent = quality.toUpperCase();
+
+function connect() {
+  if (es) es.close();
+  dot.className = 'dot off'; stat.textContent = 'connecting…'; cv.classList.add('loading');
+  const url = '/canvas/' + userId + '/stream?quality=' + quality;
+  es = new EventSource(url);
+  es.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.base64) {
+        const img = new Image();
+        img.onload = () => { cv.src = 'data:image/png;base64,' + d.base64; cv.classList.remove('loading'); dot.className = 'dot live'; stat.textContent = 'live ' + new Date(d.ts).toLocaleTimeString(); frameCount++; fps++; const now = Date.now(); if (now - lastFpsTime >= 1000) { fpsEl.textContent = fps + ' fps'; fps = 0; lastFpsTime = now; } };
+        img.onerror = () => { dot.className = 'dot off'; stat.textContent = 'frame error' };
+        img.src = 'data:image/png;base64,' + d.base64;
+      } else if (d.error) {
+        dot.className = 'dot off'; stat.textContent = d.error;
+      }
+    } catch(_) {}
+  };
+  es.onerror = () => { dot.className = 'dot off'; stat.textContent = 'reconnecting…'; setTimeout(connect, 3000); };
+}
+
+btnP.addEventListener('click', () => {
+  paused = !paused;
+  btnP.textContent = paused ? '▶' : '⏸';
+  btnP.classList.toggle('active', paused);
+  stat.textContent = paused ? 'paused' : 'live';
+  if (!paused) connect();
+});
+
+btnF.addEventListener('click', () => {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+  else document.exitFullscreen();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === ' ') { e.preventDefault(); btnP.click(); }
+  if (e.key === 'f' || e.key === 'F') btnF.click();
+});
+
+// Scroll to toggle quality
+window.addEventListener('wheel', (e) => {
+  if (e.target === cv || e.target.closest('#wrap')) {
+    e.preventDefault();
+    if (e.deltaY > 0 && quality !== 'hd') { quality = 'hd'; frameInterval = 5000; qualityEl.textContent = 'HD'; connect(); }
+    else if (e.deltaY < 0 && quality !== 'sd') { quality = 'sd'; frameInterval = 2000; qualityEl.textContent = 'SD'; connect(); }
+  }
+}, { passive: false });
+
+// Reconnect on visibility change
+document.addEventListener('visibilitychange', () => { if (!document.hidden && paused === false) connect(); });
+
+connect();
+</script>
+</body>
+</html>
