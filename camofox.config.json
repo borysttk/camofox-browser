@@ -3,10 +3,64 @@
   "name": "Camofox Browser",
   "version": "1.6.0",
   "newPageTimeoutMs": 10000,
-  "interactive": { "mode": "off" },
+  "interactive": {
+    "mode": "on"
+  },
+  "userId": "q",
+  "sessionKey": "botai",
   "plugins": {
-    "youtube": { "enabled": true },
-    "persistence": { "enabled": true },
-    "vnc": { "enabled": false, "resolution": "1920x1080" }
-  }
+    "youtube": {
+      "enabled": true
+    },
+    "persistence": {
+      "enabled": true,
+      "hermesVault": true
+    },
+    "vnc": {
+      "enabled": false,
+      "resolution": "1920x1080",
+      "viewOnly": false,
+      "novncPort": 6081,
+      "vncPort": 5901
+    },
+    "canvas": {
+      "enabled": true
+    },
+    "vault-login": {
+      "enabled": true,
+      "authVaultUrl": "http://127.0.0.1:5600"
+    },
+    "vision-mcp": {
+      "enabled": true,
+      "visionModel": "meta-llama/llama-3.2-90b-vision-instruct"
+    },
+    "q-mask": {
+      "enabled": true,
+      "autoInject": true
+    },
+    "evaluate-chunked": {
+      "enabled": true,
+      "chunkSize": 20
+    },
+    "oauth-popup-tracker": {
+      "enabled": true,
+      "sessionKey": "__popups__"
+    },
+    "re-tools": {
+      "enabled": true,
+      "auth": false
+    }
+  },
+  "browser": {
+    "executablePath": "/usr/bin/firefox-esr",
+    "headless": false,
+    "autoLaunch": true,
+    "args": [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--remote-debugging-port=9222"
+    ]
+  },
+  "defaultBrowser": true
 }

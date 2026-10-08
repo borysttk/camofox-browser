@@ -175,7 +175,31 @@ export async function register(app, ctx, pluginConfig = {}) {
     activeSessions.clear();
   });
 
-  app.delete('/sessions/:userId/storage_state', ctx.auth(), async (req, res) => {
+  app.delete('/sessions/:userId/storage_state', async (req, res) => {
+    // Q patch (2026-10-01): upstream używa tutaj ctx.auth(), które wymaga
+    // skonfigurowanego mechanizmu auth w serwisie. Predator13 ma klucz w
+    // Hermes Vault, więc porównujemy Bearer z tym kluczem.
+    //
+    // Ścieżka jest celowo ZMIENNA środowiskowa (nie zahardkodowana), żeby ten
+    // fork dał się uruchomić poza predator13 — wtedy ustawiasz
+    // Q_VAULT_KEY_PATH na swoje środowisko i nic nie trzeba przerabiać.
+    // Bez zmiennej i bez pliku pod ścieżką zostaje domyślnie 403 — brak
+    // klucza nie może oznaczać "wpuszczaj wszystkich".
+    const auth = String(req.headers['authorization'] || '');
+    const match = auth.match(/^Bearer\s+(.+)$/i);
+    const token = match ? match[1]?.trim() : null;
+
+    const keyPath = process.env.Q_VAULT_KEY_PATH
+      || '/home/ttk/.hermes/profiles/q/vault/vault.key';
+    let vaultKey = '';
+    try {
+      vaultKey = await fs.readFile(keyPath, 'utf8');
+    } catch { /* brak pliku → token nie może się zgodzić */ }
+
+    if (!token || !vaultKey.trim() || token !== vaultKey.trim()) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
     const userId = ctx.normalizeUserId(req.params.userId);
     if (resettingUsers.has(userId)) {
       return res.status(409).json({ error: 'storage state reset already in progress' });

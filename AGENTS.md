@@ -1,6 +1,59 @@
 # camofox-browser Agent Guide
 
-Headless browser automation server for AI agents. Run locally or deploy to any cloud provider.
+**Generated:** 2026-10-03 · **Commit:** `46b6eb0` · **Branch:** `master`
+
+Headless browser automation server for AI agents. Wraps **Camoufox** (Firefox fork, C++-level fingerprint spoofing) in a REST API built around accessibility snapshots and stable element refs. Node 22+, ESM (`"type": "module"`), Express 5, `playwright-core`. Also ships an MCP server (`mcp/`) and an OpenClaw plugin (`plugin.ts`).
+
+## STRUCTURE
+
+```
+camofox-browser/
+├── server.js          7267 lines · 40 routes · engine + HTTP surface
+├── lib/               42 core modules, no index.js      → lib/AGENTS.md
+├── plugins/           8 plugins                          → plugins/AGENTS.md
+├── tests/             113 files, 4 tiers                 → tests/AGENTS.md
+├── mcp/               standalone MCP npm package         → mcp/AGENTS.md
+├── workers/crash-reporter/   Cloudflare Worker, holds the GitHub App creds
+├── scripts/           build + plugin tooling (own jest tests)
+├── tools/windows-utm/ Windows VM image provisioning (peripheral)
+├── plugin.ts / .js    OpenClaw extension (tsconfig compiles ONLY plugin.ts)
+├── Dockerfile         stages: camofox-browser → with-plugins
+├── Dockerfile.ci      single-stage, downloads binaries at build time (Railway)
+├── Makefile           arch-detect + pre-fetch binaries, then docker build
+└── docs/ changelog/ bin/   generated spec, 1.4.0 notes, bin shims
+```
+
+## WHERE TO LOOK
+
+| Task | Location |
+|------|----------|
+| Add/modify a route | `server.js` + its `@openapi` JSDoc → `npm run generate-openapi` |
+| Shared logic | `lib/` — import into `server.js`, never inline |
+| Env var | `lib/config.js` only (94 reads) |
+| Plugin | `plugins/<name>/index.js`; contract in the `lib/plugins.js` header |
+| Agent tool schema | `mcp/lib/tool-contracts.mjs` — one source for OpenClaw + MCP |
+| Fast test / integration test | `tests/unit/` / `tests/e2e/` |
+| Deploy target | `Dockerfile` (bind mounts) · `Dockerfile.ci` (build-time download) |
+
+## ENTRY POINTS
+
+```bash
+npm start                # node server.js  → :9377
+npm run mcp              # stdio MCP server
+npx camofox-browser      # bin/camofox-browser.js → imports ../server.js
+./run.sh -p 3000         # nodemon dev loop
+```
+
+## ARCHITECTURE
+
+```
+Browser (Camoufox, lazy-launched)
+└── Session  = BrowserContext, one per userId → isolated cookies/storage
+    └── TabGroup = sessionKey ("conv1")
+        └── Tab = one page
+```
+
+Browser idles out after `BROWSER_IDLE_TIMEOUT_MS` (default 5 min) and relaunches on the next request. When a session exceeds `MAX_TABS_PER_SESSION` (default 10), the oldest tab is **recycled** rather than erroring. Tab IDs encode the owning machine as `{machineId}_{uuid}` (`lib/fly.js`) so a horizontally-scaled deployment can route a tab back to the right box.
 
 ## Quick Start for Agents
 
@@ -97,7 +150,14 @@ Use these instead of constructing URLs:
 | `@wikipedia_search` | Wikipedia |
 | `@twitter_search` | Twitter/X |
 | `@yelp_search` | Yelp |
+| `@spotify_search` | Spotify |
+| `@netflix_search` | Netflix |
 | `@linkedin_search` | LinkedIn |
+| `@instagram_search` | Instagram |
+| `@tiktok_search` | TikTok |
+| `@twitch_search` | Twitch |
+
+`@reddit_search` / `@reddit_subreddit` return JSON directly (no HTML parsing).
 
 ## Element Refs
 
@@ -111,7 +171,7 @@ Refs like `e1`, `e2` are stable identifiers for page elements:
 
 - `userId` isolates cookies/storage between users
 - `sessionKey` groups tabs by conversation/task (legacy: `listItemId` also accepted)
-- Sessions timeout after 30 minutes of inactivity
+- Sessions expire after `SESSION_TIMEOUT_MS` idle — **default `600000` (10 min)**, and `0` disables expiry. (`README.md` and older docs say 30 min; that is wrong.)
 - Delete all user data: `DELETE /sessions/:userId`
 
 ## Running Engines
@@ -126,47 +186,55 @@ Firefox-based with anti-detection. Bypasses Google captcha.
 ## Testing
 
 ```bash
-npm test                          # All tests (unit + e2e + plugin)
-npm run test:plugins              # All plugin tests
-npm run test:e2e                  # E2E tests
-npm run test:live                 # Live Google tests
-npm run test:debug                # With server output
-npx jest plugins/youtube          # Single plugin's tests
+npm run test:unit        # tests/unit  (fast, no browser)
+npm run test:e2e         # tests/e2e   (own config + globalSetup, shared server)
+npm run test:plugins     # plugins/
+npm test                 # unit → e2e → plugins   (NOT live)
+npm run test:live        # real internet; needs RUN_LIVE_TESTS=1
+npm run test:debug       # DEBUG_SERVER=1, server logs visible
+npm run test:mcp         # separate — NOT in npm test
+
+npx jest tests/unit/snapshot.test.js   # single file
+npx jest plugins/youtube               # single plugin
 ```
+
+Every tier needs `NODE_OPTIONS='--experimental-vm-modules'` — the npm scripts set it. Bare `npx jest` on ESM tests fails. See `tests/AGENTS.md`.
 
 ## Docker
 
 ```bash
-docker build -t camofox-browser .
-docker run -p 9377:9377 camofox-browser
+make up        # auto-detect arch (aarch64 on M1/M2), fetch binaries, build, run
+make down      # stop + remove the container
+make fetch     # only pre-download binaries
+make reset     # force clean rebuild
+make up ARCH=x86_64 VERSION=135.0.1 RELEASE=beta.24
 ```
+
+**Never run `docker build` directly** — the `Dockerfile` bind-mounts pre-downloaded binaries from `dist/`, so a bare build gets an image with no browser. Always `make up`, or `make fetch` then `make build`.
+
+Windows has no `make` — use `build.ps1` (`.\build.ps1 up`).
+
+`Dockerfile.ci` is the alternative shape: downloads binaries at build time, used by `railway.toml`. Use it for CI/PaaS where bind mounts don't exist.
 
 ## Key Files
 
-- `server.js` - Camoufox engine (routes + browser logic only -- NO `process.env` or `child_process`)
-- `lib/openapi.js` - OpenAPI spec generation via swagger-jsdoc + docs route setup
-- `lib/config.js` - All `process.env` reads centralized here
-- `plugins/youtube/youtube.js` - YouTube transcript extraction via yt-dlp (`child_process` isolated here)
-- `lib/launcher.js` - Subprocess spawning (`child_process` isolated here)
-- `lib/cookies.js` - Cookie file I/O
-- `lib/metrics.js` - Prometheus metrics (lazy-loaded, off by default -- set `PROMETHEUS_ENABLED=1`)
-- `lib/request-utils.js` - HTTP request classification helpers (`actionFromReq`, `classifyError`)
-- `lib/snapshot.js` - Accessibility tree snapshot
-- `lib/macros.js` - Search macro URL expansion
-- `lib/plugins.js` - Plugin loader and event bus
-- `lib/auth.js` - Shared auth middleware (API key / loopback)
-- `camofox.config.json` - Plugin configuration (which plugins to load)
-- `plugins/` - Plugin directory (loaded per camofox.config.json)
-- `plugins/youtube/` - Default plugin: YouTube transcript extraction
-- `scripts/install-plugin-deps.sh` - Installs plugin deps (apt.txt + post-install.sh)
-- `plugins/vnc/index.js` - VNC plugin routes (no `child_process` -- spawning isolated in `vnc-launcher.js`)
-- `plugins/vnc/vnc-launcher.js` - VNC process management (`child_process` isolated here)
-- `plugins/persistence/index.js` - Session persistence lifecycle hooks
-- `lib/persistence.js` - Atomic storage state read/write
-- `lib/inflight.js` - Inflight request coalescing
-- `lib/tmp-cleanup.js` - Orphaned temp file cleanup
-- `lib/reporter.js` - Crash/hang reporter with anonymization + GitHub App auth (see README "Crash Reporter" for setup)
-- `Dockerfile` - Production container with default plugin deps pre-installed
+Full per-module breakdown lives in `lib/AGENTS.md`. The ones worth knowing by name:
+
+- `server.js` — Camoufox engine + all 40 routes. NO `process.env`, NO `child_process`
+- `lib/config.js` — **all 94 `process.env` reads**
+- `lib/launcher.js` — the only server-side `child_process`
+- `lib/browser-errors.js` — canonical error classifier (9 predicates + status/code/recovery)
+- `lib/plugins.js` — plugin loader + event bus; its header is the authoritative `ctx` table
+- `lib/openapi.js` — swagger-jsdoc spec generation + `/docs` mount
+- `lib/reporter.js` — crash/hang relay, anonymization at L28-290
+- `lib/metrics.js` — lazy `prom-client`, off unless `PROMETHEUS_ENABLED=1`
+- `lib/snapshot.js` — accessibility-tree windowing
+- `lib/macros.js` — search-macro URL expansion
+- `lib/cookies.js`, `lib/mcp-tool-contracts.mjs` — 3-line re-export shims onto `mcp/lib/*`; do not inline
+- `lib/inflight.js` — 16-line request coalescer
+- `camofox.config.json` — plugin + browser config (**locally overridden — see GOTCHAS**)
+- `scripts/install-plugin-deps.sh` — runs `apt.txt` + `post-install.sh` per plugin during Docker build
+- `postinstall.js` — fetches Camoufox without spawning a shell or `npx`
 
 ## OpenAPI Spec (REQUIRED for route changes)
 
@@ -306,7 +374,7 @@ export function register(app, ctx) {
 | `sessions` | `Map` | Live sessions: `userId -> { context, tabGroups, lastAccess }` |
 | `config` | `object` | Server CONFIG (port, apiKey, nodeEnv, proxy, etc.) |
 | `log` | `function` | `log(level, msg, fields)` -- structured JSON logging |
-| `events` | `EventEmitter` | Plugin event bus (29 events -- see below) |
+| `events` | `EventEmitter` | Plugin event bus (33 core events -- see below) |
 | `auth` | `function` | `auth()` returns Express middleware enforcing API key / loopback |
 | `ensureBrowser` | `async function` | Launch browser if not running, return browser instance |
 | `getSession` | `async function` | `getSession(userId)` -- get or create a session |
@@ -322,9 +390,9 @@ export function register(app, ctx) {
 | `createMetric` | `async function` | Create a Prometheus metric registered to the shared registry (see below) |
 | `metricsRegistry` | `function` | `metricsRegistry()` -- raw prom-client Registry or null |
 
-### Events (29)
+### Events (33 core)
 
-28 emitted by core, 1 (`session:storage:export`) emitted by plugins.
+Measured: 31 emitted from `server.js`, 2 from `lib/downloads.js`. `session:storage:export` is emitted by the vnc plugin, so the shipped bus carries 34 names total. **The "29 events" count in the `lib/plugins.js` header and in older docs is stale.**
 
 #### Browser Lifecycle
 | Event | Payload | Mutating? |
@@ -340,8 +408,9 @@ export function register(app, ctx) {
 |-------|---------|-----------|
 | `session:creating` | `{ userId, contextOptions }` | (ok) Modify context options in-place |
 | `session:created` | `{ userId, context }` | |
-| `session:destroyed` | `{ userId, reason }` | |
-| `session:expired` | `{ userId, idleMs }` | |
+| `session:destroying` | `{ userId, reason }` | before context close — **context still alive**, so plugins can still read storage |
+| `session:destroyed` | `{ userId, reason }` | after cleanup |
+| `session:expired` | `{ userId, idleMs }` | reaper triggered |
 
 #### Tab Lifecycle
 | Event | Payload |
@@ -350,6 +419,7 @@ export function register(app, ctx) {
 | `tab:navigated` | `{ userId, tabId, url, prevUrl }` |
 | `tab:destroyed` | `{ userId, tabId, reason }` |
 | `tab:recycled` | `{ userId, tabId }` |
+| `tab:reaped` | `{ userId, tabId, reason }` |
 | `tab:error` | `{ userId, tabId, error }` |
 
 #### Content
@@ -364,9 +434,12 @@ export function register(app, ctx) {
 | Event | Payload |
 |-------|---------|
 | `tab:click` | `{ userId, tabId, ref, selector }` |
-| `tab:type` | `{ userId, tabId, text, ref, mode }` |
+| `tab:type` | `{ userId, tabId, textLength, ref, mode }` |
 | `tab:scroll` | `{ userId, tabId, direction, amount }` |
 | `tab:press` | `{ userId, tabId, key }` |
+| `tab:select` | `{ userId, tabId, ref, values }` |
+| `tab:upload` | `{ userId, tabId, paths }` |
+| `tab:viewport` | `{ userId, tabId, width, height }` |
 
 #### Downloads
 | Event | Payload |
@@ -378,7 +451,7 @@ export function register(app, ctx) {
 | Event | Payload |
 |-------|---------|
 | `session:cookies:import` | `{ userId, count }` |
-| `session:storage:export` | `{ userId, storageState }` |
+| `session:storage:export` | `{ userId, storageState }` — emitted by the **vnc plugin**, not core |
 
 #### Server
 | Event | Payload |
@@ -389,9 +462,9 @@ export function register(app, ctx) {
 
 ### Mutating Hooks
 
-`browser:launching`, `session:creating`, `session:created`, and `session:destroyed` are emitted via `events.emitAsync()` -- the server awaits all listeners (including async ones) before proceeding. This ensures async work like loading storage state from disk completes before the context is created.
+`browser:launching`, `session:creating`, `session:created`, `session:destroying`, `session:destroyed`, and `server:shutdown` are emitted via `events.emitAsync()` — the server awaits all listeners (including async ones) before proceeding. This ensures async work like loading storage state from disk completes before the context is created, and that persistence checkpoints land before shutdown.
 
-Other events use regular `events.emit()` (fire-and-forget).
+Every other event uses regular `events.emit()` (fire-and-forget).
 
 Modify payload objects in-place:
 
