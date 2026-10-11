@@ -4,6 +4,7 @@ import path from 'node:path';
 import { jest } from '@jest/globals';
 import {
   getUserPersistencePaths,
+  isContextClosedError,
   loadPersistedStorageState,
   persistStorageState,
 } from '../../lib/persistence.js';
@@ -113,5 +114,57 @@ describe('profile persistence helpers', () => {
 
     const leftovers = (await fs.readdir(userDir)).filter((name) => name.includes('.tmp-'));
     expect(leftovers).toEqual([]);
+  });
+
+  // Q patch (2026-10-11) — see lib/persistence.js isContextClosedError.
+  test('a closed context is a benign skip, not a persistence failure', async () => {
+    const originalState = {
+      cookies: [{ name: 'session', value: 'still-good', domain: '.copilot.com', path: '/' }],
+    };
+    await persistStorageState({
+      profileDir: tmpDir,
+      userId: 'user-closed',
+      context: {
+        storageState: jest.fn(async ({ path: targetPath }) => {
+          await fs.writeFile(targetPath, JSON.stringify(originalState, null, 2));
+        }),
+      },
+      logger: { warn: jest.fn(), info: jest.fn() },
+    });
+
+    const warn = jest.fn();
+    const info = jest.fn();
+    const closedContext = {
+      storageState: jest.fn(async () => {
+        throw new Error(
+          'browserContext.storageState: Target page, context or browser has been closed',
+        );
+      }),
+    };
+    const result = await persistStorageState({
+      profileDir: tmpDir,
+      userId: 'user-closed',
+      context: closedContext,
+      logger: { warn, info },
+    });
+
+    expect(result.persisted).toBe(false);
+    expect(result.reason).toBe('context_closed');
+    // The operator should NOT see a scary warning for a routine teardown.
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalled();
+
+    // Critically: the previous good snapshot must survive untouched.
+    const { storageStatePath } = getUserPersistencePaths(tmpDir, 'user-closed');
+    const parsed = JSON.parse(await fs.readFile(storageStatePath, 'utf8'));
+    expect(parsed).toEqual(originalState);
+  });
+
+  test('isContextClosedError only matches closed-target failures', () => {
+    expect(isContextClosedError(new Error('Target page, context or browser has been closed'))).toBe(true);
+    expect(isContextClosedError(new Error('Target closed'))).toBe(true);
+    expect(isContextClosedError(new Error('simulated crash mid-write'))).toBe(false);
+    expect(isContextClosedError(new Error('ENOSPC: no space left on device'))).toBe(false);
+    expect(isContextClosedError(null)).toBe(false);
   });
 });

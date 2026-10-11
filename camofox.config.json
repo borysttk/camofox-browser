@@ -49,6 +49,10 @@
     "re-tools": {
       "enabled": true,
       "auth": false
+    },
+    "bookmarks": {
+      "enabled": true,
+      "maxBookmarks": 500
     }
   },
   "browser": {

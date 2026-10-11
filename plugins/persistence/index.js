@@ -31,6 +31,7 @@
 import fs from 'node:fs/promises';
 import {
   getUserPersistencePaths,
+  isContextClosedError,
   loadPersistedStorageState,
   persistStorageState,
 } from '../../lib/persistence.js';
@@ -66,6 +67,19 @@ export async function register(app, ctx, pluginConfig = {}) {
   };
 
   log('info', 'persistence plugin enabled', { profileDir, indexedDB });
+
+  // Q patch (2026-10-11): event-only checkpointing left long-lived sessions
+  // unsaved whenever no cookie import / session lifecycle event happened. A
+  // user who just logs in and then leaves the tab alone could lose hours of
+  // auth state. The periodic flush closes that window. It is unref()'d so it
+  // can never keep the process alive on its own.
+  const PERIODIC_FLUSH_MS = Number(process.env.CAMOFOX_PERSIST_FLUSH_MS || 5 * 60 * 1000);
+  const periodicFlush = PERIODIC_FLUSH_MS > 0 ? setInterval(() => {
+    for (const [userId, context] of activeSessions) {
+      checkpoint(userId, context, 'periodic').catch(() => {});
+    }
+  }, PERIODIC_FLUSH_MS) : null;
+  periodicFlush?.unref?.();
 
   // Track active sessions and serialize checkpoints per user. Resetting users
   // skip new checkpoints until their live context and saved state are gone.
@@ -169,6 +183,7 @@ export async function register(app, ctx, pluginConfig = {}) {
 
   // On shutdown: checkpoint all remaining sessions
   events.on('server:shutdown', async () => {
+    clearInterval(periodicFlush);
     for (const [userId, context] of activeSessions) {
       await checkpoint(userId, context, 'shutdown').catch(() => {});
     }
