@@ -64,30 +64,50 @@ export async function register(app, ctx, pluginConfig = {}) {
         if (!session || session._closing) return;
 
         // `context.on('page')` NIE odróżnia nowej karty od popupu — wyzwala się
-        // także przy normalnym otwarciu taba przez endpointy, co dublowało każdy
-        // tab w grupie `__popups__`. Odfiltrowujemy: strona ma już zarządcę,
-        // więc rdzeń zdążył ją zarejestrować. Sieroty (popup z iframe/chrome,
-        // window.open z nieobsłużonego kontekstu) nie mają zarządcy.
-        for (const group of session.tabGroups.values()) {
-          for (const state of group.values()) {
-            if (state && state.page === page) return;
+        // także przy normalnym otwarciu taba przez endpointy.
+        //
+        // Q patch (2026-10-11): SYNCHRONICZNY check poniżej przegrywał wyścig
+        // i to był realny bug. `context.on('page')` fires w momencie, gdy
+        // Playwright tworzy Page — a POST /tabs rejestruje kartę w
+        // session.tabGroups dopiero PO `await createLeasedPage()`. Przez
+        // ten czas zwykły tab wygląda jak sierota, więc KAŻDY tab
+        // otwarty przez API był duplikowany do `__popups__` z tym samym URL.
+        // Otwarcie 3 tabów dawało 3 prawdziwe + 3 duchy, które potem
+        // widać w /tabs, w VNC i w każdym freeze/thaw liczącym karty.
+        //
+        // Poprawka: decyzję odraczamy o tick, bo wtedy rdzeń zdążył już
+        // zarejestrować kartę. Prawdziwy popup (iframe / window.open z
+        // strony, której nikt nie zarządza) nadal nie jest zarejestrowany
+        // przez nikogo i nadal jest adoptowany.
+        setTimeout(() => {
+          try {
+            const live = sessions.get(key);
+            if (!live || live._closing) return;
+            // Teraz check jest wiarygodny: rdzeń miał szansę zarejestrować.
+            for (const group of live.tabGroups.values()) {
+              for (const state of group.values()) {
+                if (state && state.page === page) return; // ma zarządcę
+              }
+            }
+
+            const tabId = `tab_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+            const group = live.tabGroups.get(groupKey) || new Map();
+            if (!live.tabGroups.has(groupKey)) live.tabGroups.set(groupKey, group);
+
+            const state = makeTabState(page);
+            group.set(tabId, state);
+            live.lastAccess = Date.now();
+
+            log('info', 'oauth popup registered as managed tab', { userId: key, tabId, sessionKey: groupKey });
+            // Dzięki temu q-mask wstrzykuje się do popupu jak do każdego taba.
+            events.emit('tab:created', { userId: key, tabId, page, url: '' });
+
+            // Rejestruj głębiej — popup może otworzyć kolejny popup.
+            watch(key, page.context?.() || context, sessionKey);
+          } catch (err) {
+            log('warn', 'oauth-popup-tracker: page handler failed', { error: err?.message });
           }
-        }
-
-        const tabId = `tab_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
-        const group = session.tabGroups.get(groupKey) || new Map();
-        if (!session.tabGroups.has(groupKey)) session.tabGroups.set(groupKey, group);
-
-        const state = makeTabState(page);
-        group.set(tabId, state);
-        session.lastAccess = Date.now();
-
-        log('info', 'oauth popup registered as managed tab', { userId: key, tabId, sessionKey: groupKey });
-        // Dzięki temu q-mask wstrzykuje się do popupu jak do każdego taba.
-        events.emit('tab:created', { userId: key, tabId, page, url: '' });
-
-        // Rejestruj głębiej — popup może otworzyć kolejny popup.
-        watch(key, page.context?.() || context, sessionKey);
+        }, 0);
       } catch (err) {
         log('warn', 'oauth-popup-tracker: page handler failed', { error: err?.message });
       }

@@ -14,6 +14,7 @@
     },
     "persistence": {
       "enabled": true,
+      "indexedDB": true,
       "hermesVault": true
     },
     "vnc": {
@@ -53,11 +54,14 @@
     "bookmarks": {
       "enabled": true,
       "maxBookmarks": 500
+    },
+    "sections": {
+      "enabled": true
     }
   },
   "browser": {
     "executablePath": "/usr/bin/firefox-esr",
-    "headless": false,
+    "headless": true,
     "autoLaunch": true,
     "args": [
       "--no-sandbox",

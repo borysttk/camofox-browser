@@ -17,6 +17,7 @@ Używa Authorization: Bearer z unita systemd — /tabs wymaga tokena.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -34,7 +35,18 @@ USER_ID = "q"
 SESSION_KEY = "botai"
 
 # Strona startowa — lekka, zawsze dostępna, widać że przeglądarka żyje.
-START_URL = "https://github.com"
+#
+# Q patch (2026-10-11): URL brany jest ze zmiennej Q_START_URL z unita
+# systemd, zamiast być wpisany na sztywno. Wcześniej startowało github.com
+# niezależnie od tego, co faktycznie skonfigurowano — Q_START_URL był
+# ustawiony, ale nikt go nie czytał (server.js też go ignoruje), więc
+# wyglądało to na "strona startowa działa", a tak nie było.
+#
+# Kolejność: Q_START_URL → Q_START_URL_FALLBACK → about:blank.
+# about:blank jest ostatni, nie domyślny: github/google zasłaniają
+# prawdziwy stan sesji w VNC, a pusta strona jest uczciwym wskaźnikiem
+# że przeglądarka żyje, choć jeszcze nic nie załadowała.
+START_URL = (os.environ.get("Q_START_URL") or "").strip() or "about:blank"
 
 LOG = "/home/ttk/camofox-browser/keepalive.log"
 MAX_LOG_LINES = 500

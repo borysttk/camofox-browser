@@ -266,9 +266,12 @@ const QMASK_INIT = function () {
 
   // Znajdź właściwe pole tekstowe na stronie docelowej
   function findTargetInput() {
-    // 1. contenteditable (Gemini, ChatGPT, Notion…)
-    const ce = document.querySelector('[contenteditable="true"]');
+    // 1. contenteditable (Gemini, ChatGPT, Notion…) — w tym plaintext-only (AI Studio)
+    const ce = document.querySelector('[contenteditable="true"], [contenteditable="plaintext-only"], [role="textbox"][contenteditable]');
     if (ce) return { el: ce, kind: 'contenteditable' };
+    // 1b. role=textbox bez contenteditable (AI Studio prompt box)
+    const roleTb = document.querySelector('[role="textbox"]:not([data-q-mask="input"])');
+    if (roleTb) return { el: roleTb, kind: 'contenteditable' };
     // 2. textarea
     const ta = document.querySelector('textarea:not([data-q-mask="input"])');
     if (ta) return { el: ta, kind: 'textarea' };
@@ -284,6 +287,11 @@ const QMASK_INIT = function () {
     const byAria = Array.from(document.querySelectorAll('button[aria-label]'))
       .find(b => /wyślij|wyslij|send|submit/i.test(b.getAttribute('aria-label')));
     if (byAria) return byAria;
+    // 1b. tekst/klasa specyficzna dla serwisów (AI Studio: Run, Remix, primary button)
+    const byTextOrClass = Array.from(document.querySelectorAll('button'))
+      .find(b => /(?:^|\s)(?:Run|Remix)(?:\s|$)/i.test(b.textContent || '') ||
+                 /remix-button|ms-button-primary|build-button/i.test(b.className || ''));
+    if (byTextOrClass) return byTextOrClass;
     // 2. ostatni button w composerze (form w okolicy inputu)
     const tgt = findTargetInput();
     if (tgt) {
